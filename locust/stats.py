@@ -110,6 +110,7 @@ class RequestStats:
         self.errors = {}
         self.total = StatsEntry(self, "Aggregated", None, use_response_times_cache=self.use_response_times_cache)
         self.history = []
+        self.items = []
 
     @property
     def num_requests(self):
@@ -134,6 +135,17 @@ class RequestStats:
     def log_request(self, method, name, response_time, content_length):
         self.total.log(response_time, content_length)
         self.get(name, method).log(response_time, content_length)
+        # Log information of a single request
+        current_time = time.time()
+        t = int(current_time)
+        r = {
+            "time": t,
+            "method": method,
+            "name": name,
+            "response_time": response_time,
+            "content_length": content_length,
+        }
+        self.items.append(r)
 
     def log_error(self, method, name, error):
         self.total.log_error(error)
@@ -908,6 +920,9 @@ class StatsCSVFileWriter(StatsCSV):
         self.stats_history_csv_filehandle = open(self.stats_history_file_name(), "w")
         self.stats_history_csv_writer = csv.writer(self.stats_history_csv_filehandle)
 
+        self.stats_items_csv_filehandle = open(self.base_filepath + "_items.csv", "w")
+        self.stats_items_csv_writer = csv.writer(self.stats_items_csv_filehandle)
+
         self.failures_csv_filehandle = open(self.base_filepath + "_failures.csv", "w")
         self.failures_csv_writer = csv.writer(self.failures_csv_filehandle)
         self.failures_csv_data_start = 0
@@ -933,6 +948,14 @@ class StatsCSVFileWriter(StatsCSV):
             "Total Average Content Size",
         ]
 
+        self.stats_items_csv_columns = [
+            "Timestamp",
+            "Type",
+            "Name",
+            "Response Time",
+            "Content Size",
+        ]
+
     def __call__(self):
         self.stats_writer()
 
@@ -944,6 +967,7 @@ class StatsCSVFileWriter(StatsCSV):
         requests_csv_data_start = self.requests_csv_filehandle.tell()
 
         self.stats_history_csv_writer.writerow(self.stats_history_csv_columns)
+        self.stats_items_csv_writer.writerow(self.stats_items_csv_columns)
 
         self.failures_csv_writer.writerow(self.failures_columns)
         self.failures_csv_data_start = self.failures_csv_filehandle.tell()
@@ -961,6 +985,7 @@ class StatsCSVFileWriter(StatsCSV):
             self.requests_csv_filehandle.truncate()
 
             self._stats_history_data_rows(self.stats_history_csv_writer, now)
+            self._stats_items_data_rows(self.stats_items_csv_writer)
 
             self.failures_csv_filehandle.seek(self.failures_csv_data_start)
             self._failures_data_rows(self.failures_csv_writer)
@@ -973,6 +998,7 @@ class StatsCSVFileWriter(StatsCSV):
             if now - last_flush_time > CSV_STATS_FLUSH_INTERVAL_SEC:
                 self.requests_flush()
                 self.stats_history_flush()
+                self.stats_items_flush()
                 self.failures_flush()
                 self.exceptions_flush()
                 last_flush_time = now
@@ -1018,11 +1044,24 @@ class StatsCSVFileWriter(StatsCSV):
                 )
             )
 
+    def _stats_items_data_rows(self, csv_writer):
+        stats = self.environment.stats
+        while stats.items:
+            stats_item = stats.items.pop()
+            csv_writer.writerow([stats_item["time"],
+                                stats_item["method"],
+                                stats_item["name"],
+                                stats_item["response_time"],
+                                stats_item["content_length"]])
+
     def requests_flush(self):
         self.requests_csv_filehandle.flush()
 
     def stats_history_flush(self):
         self.stats_history_csv_filehandle.flush()
+
+    def stats_items_flush(self):
+        self.stats_items_csv_filehandle.flush()
 
     def failures_flush(self):
         self.failures_csv_filehandle.flush()
@@ -1033,6 +1072,12 @@ class StatsCSVFileWriter(StatsCSV):
     def close_files(self):
         self.requests_csv_filehandle.close()
         self.stats_history_csv_filehandle.close()
+
+        # Before closing, try writing items one more time for completeness
+        self._stats_items_data_rows(self.stats_items_csv_writer)
+        self.stats_items_flush()
+        self.stats_items_csv_filehandle.close()
+
         self.failures_csv_filehandle.close()
         self.exceptions_csv_filehandle.close()
 
